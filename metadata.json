@@ -1,0 +1,5 @@
+{
+  "name": "05版創新新聞靈感繪圖師 (News-to-Image AI)",
+  "description": "一個能抓取每日社會新聞，自動生成提示詞，並產生對應圖像的應用程式。此應用程式使用 AI 模擬新聞抓取，並引導使用者完成從新聞標題到 AI 圖像生成的創作流程。",
+  "requestFramePermissions": []
+}

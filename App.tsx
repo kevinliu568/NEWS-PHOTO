@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { AppStage, NewsHeadline, ImagePrompt, ImageStyle, NewsSource, GenerationItem } from './types';
-import { fetchNewsHeadlines, generateImagePrompt, generateImage, editImage } from './services/geminiService';
+import { AppStage, NewsHeadline, ImagePrompt, ImageStyle, ImageTextLanguage, NewsSource, GenerationItem } from './types';
+import { fetchNewsHeadlines, generateImagePrompt, generateImage, editImage, generateVideo } from './services/geminiService';
 import StepIndicator from './components/StepIndicator';
 import LoadingSpinner from './components/LoadingSpinner';
 import ActionButton from './components/ActionButton';
@@ -8,6 +8,16 @@ import ProgressBar from './components/ProgressBar';
 import StyleSelector from './components/StyleSelector';
 
 type GenerationMode = 'merge' | 'individual';
+
+declare global {
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
+  interface Window {
+    aistudio?: AIStudio;
+  }
+}
 
 const StarRating: React.FC<{ rating: number; className?: string }> = ({ rating = 0, className = '' }) => {
   return (
@@ -35,6 +45,7 @@ const App: React.FC = () => {
   const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [progress, setProgress] = useState(0);
   const [imageStyle, setImageStyle] = useState<ImageStyle | null>(null);
+  const [textLanguage, setTextLanguage] = useState<ImageTextLanguage>(ImageTextLanguage.NONE);
 
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const [currentPromptEdits, setCurrentPromptEdits] = useState<ImagePrompt | null>(null);
@@ -66,8 +77,14 @@ const App: React.FC = () => {
   const handleError = (err: unknown) => {
     const message = err instanceof Error ? err.message : '發生未知錯誤';
     setError(message);
-    setStage(AppStage.INITIAL); // Reset on error
+    setStage(AppStage.INITIAL);
     setProgress(0);
+  };
+
+  const handleOpenKeySelection = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+    }
   };
 
   const handleFetchNews = useCallback(async () => {
@@ -112,14 +129,15 @@ const App: React.FC = () => {
     try {
       if (mode === 'merge') {
         const prompt = await generateImagePrompt(selected);
-        setGenerationItems([{ id: 'merged', source: selected, prompt, imageUrl: null }]);
+        setGenerationItems([{ id: 'merged', source: selected, prompt, mediaUrl: null, mediaType: null }]);
       } else { // individual
         const prompts = await Promise.all(selected.map(h => generateImagePrompt([h])));
         const items = selected.map((h, i) => ({
           id: h.id.toString(),
           source: [h],
           prompt: prompts[i],
-          imageUrl: null,
+          mediaUrl: null,
+          mediaType: null,
         }));
         setGenerationItems(items);
       }
@@ -133,31 +151,74 @@ const App: React.FC = () => {
     if (generationItems.length === 0 || !imageStyle) return;
     
     setError(null);
-    setStage(AppStage.IMAGE_GENERATING);
-    setLoadingMessage('AI 繪圖師正在揮灑創意，請稍候...');
 
-    const styleToPromptPrefix: { [key in ImageStyle]: string } = {
-        [ImageStyle.REALISTIC]: 'Photorealistic, cinematic style',
-        [ImageStyle.OIL_PAINTING]: 'An expressive oil painting',
-        [ImageStyle.CARTOON]: 'A vibrant, detailed cartoon style',
-        [ImageStyle.WATERCOLOR]: 'A beautiful watercolor painting',
+    if (window.aistudio && !(await window.aistudio.hasSelectedApiKey())) {
+        await window.aistudio.openSelectKey();
+    }
+    
+    if (imageStyle === ImageStyle.DYNAMIC_VIDEO) {
+        setLoadingMessage('AI 導演正在創作影片，可能需要數分鐘，請耐心等候...');
+    } else {
+        setLoadingMessage('AI 繪圖師正在繪製高品質 16:9 畫作，請稍候...');
+    }
+
+    setStage(AppStage.IMAGE_GENERATING);
+
+    const styleToPromptPrefix: { [key in ImageStyle]?: string } = {
+        [ImageStyle.REALISTIC]: 'High-resolution photorealistic 16:9 cinematic photography, sharp details, natural lighting',
+        [ImageStyle.OIL_PAINTING]: 'An expressive oil painting on a wide 16:9 canvas, thick brushstrokes, rich textures',
+        [ImageStyle.CARTOON]: 'A vibrant, detailed high-definition cartoon style, clean lines, 16:9 format',
+        [ImageStyle.WATERCOLOR]: 'A beautiful wide-format watercolor painting, soft bleeds, paper texture',
+        [ImageStyle.ILLUSTRATION]: 'A professional digital illustration, modern vector art style, clean composition',
+        [ImageStyle.CHALKBOARD]: 'A structured hand-drawn chalkboard infographic. Background is a dark slate blackboard with realistic chalk textures and subtle dust. The content features organized data visualizations, hand-drawn flowcharts, percentage indicators, and educational diagrams. Includes artistic banners for titles, sketched symbolic icons, and hand-written style typography. Uses diverse colored chalk (white, yellow, blue, green). Professional, balanced information dashboard layout, 16:9 aspect ratio.',
+        [ImageStyle.CONCEPT_ART]: 'Atmospheric epic concept art, cinematic world-building, high-level detail, masterwork lighting, 16:9',
+        [ImageStyle.VISUAL_GUIDE]: 'A professional modern visual guide infographic, clean information architecture, symbolic icons, conceptual diagrams, high readability, balanced negative space, explaining complex topics through visual storytelling, 16:9 landscape format',
     };
 
     try {
-      const imagePromises = generationItems.map(item => {
-        if (!item.prompt) return Promise.resolve(null);
-        const finalPrompt = `${styleToPromptPrefix[imageStyle]}. ${item.prompt.english}`;
-        return generateImage(finalPrompt);
-      });
+        if (imageStyle === ImageStyle.DYNAMIC_VIDEO) {
+            const videoPromises = generationItems.map(item => {
+                if (!item.prompt) return Promise.resolve(null);
+                return generateVideo(item.prompt.english);
+            });
 
-      const imageUrls = await Promise.all(imagePromises);
+            const mediaUrls = await Promise.all(videoPromises);
 
-      const updatedItems = generationItems.map((item, i) => ({
-        ...item,
-        imageUrl: imageUrls[i],
-      }));
-      
-      setGenerationItems(updatedItems);
+            const updatedItems = generationItems.map((item, i) => ({
+                ...item,
+                mediaUrl: mediaUrls[i],
+                mediaType: 'video' as const,
+            }));
+            setGenerationItems(updatedItems);
+
+        } else {
+            const imagePromises = generationItems.map(item => {
+                if (!item.prompt) return Promise.resolve(null);
+                
+                let textRequirement = '';
+                if (textLanguage === ImageTextLanguage.CHINESE) {
+                  // Use Chinese title from source or prompt
+                  const title = item.source[0]?.title || '即時新聞焦點';
+                  textRequirement = ` Please clearly include the following Traditional Chinese text on the image as a headline or major label: "${title}". Ensure the Chinese characters are accurately rendered.`;
+                } else if (textLanguage === ImageTextLanguage.ENGLISH) {
+                  // Use english title (first part of prompt or generic)
+                  const title = item.prompt.english.split(',')[0].substring(0, 30);
+                  textRequirement = ` Please clearly include the following English text on the image as a headline or major label: "${title}".`;
+                }
+
+                const finalPrompt = `${styleToPromptPrefix[imageStyle]}. ${item.prompt.english}${textRequirement}`;
+                return generateImage(finalPrompt);
+            });
+
+            const mediaUrls = await Promise.all(imagePromises);
+
+            const updatedItems = generationItems.map((item, i) => ({
+                ...item,
+                mediaUrl: mediaUrls[i],
+                mediaType: 'image' as const,
+            }));
+            setGenerationItems(updatedItems);
+        }
 
       setProgress(100);
       setTimeout(() => {
@@ -166,9 +227,8 @@ const App: React.FC = () => {
     } catch (err) {
       handleError(err);
     }
-  }, [generationItems, imageStyle]);
+  }, [generationItems, imageStyle, textLanguage]);
 
-  // Prompt Editing Handlers
   const handleEditPrompt = (itemId: string) => {
     const itemToEdit = generationItems.find(item => item.id === itemId);
     if (itemToEdit && itemToEdit.prompt) {
@@ -202,7 +262,6 @@ const App: React.FC = () => {
     });
   };
 
-  // Image Editing Handlers
   const handleStartEditImage = (itemId: string) => {
     setEditingImageId(itemId);
     setImageEditInstruction('');
@@ -216,21 +275,21 @@ const App: React.FC = () => {
   const handleConfirmEditImage = async () => {
     if (!editingImageId || !imageEditInstruction) return;
     const itemToEdit = generationItems.find(item => item.id === editingImageId);
-    if (!itemToEdit || !itemToEdit.imageUrl) return;
+    if (!itemToEdit || !itemToEdit.mediaUrl) return;
 
     setError(null);
     setStage(AppStage.IMAGE_EDITING);
     setLoadingMessage('AI 正在根據您的指示修改圖片...');
 
     try {
-      const [header, base64Data] = itemToEdit.imageUrl.split(',');
+      const [header, base64Data] = itemToEdit.mediaUrl.split(',');
       const mimeType = header.match(/:(.*?);/)?.[1] || 'image/jpeg';
       
       const newImageUrl = await editImage(base64Data, mimeType, imageEditInstruction);
 
       setGenerationItems(prevItems =>
         prevItems.map(item =>
-          item.id === editingImageId ? { ...item, imageUrl: newImageUrl } : item
+          item.id === editingImageId ? { ...item, mediaUrl: newImageUrl } : item
         )
       );
       setEditingImageId(null);
@@ -257,16 +316,19 @@ const App: React.FC = () => {
     setError(null);
     setProgress(0);
     setImageStyle(null);
+    setTextLanguage(ImageTextLanguage.NONE);
   };
 
-  const handleDownloadImage = useCallback((imageUrl: string | null, headlines: NewsHeadline[]) => {
-    if (!imageUrl || headlines.length === 0) return;
+  const handleDownloadImage = useCallback((mediaUrl: string | null, headlines: NewsHeadline[]) => {
+    if (!mediaUrl || headlines.length === 0) return;
 
     const link = document.createElement('a');
-    link.href = imageUrl;
+    link.href = mediaUrl;
     
     const safeTitle = headlines[0].title.replace(/[\\/:*?"<>|]/g, '');
-    const filename = safeTitle.substring(0, 10).trim() + '.png';
+    const isVideo = mediaUrl.startsWith('blob:');
+    const extension = isVideo ? '.mp4' : '.png';
+    const filename = safeTitle.substring(0, 10).trim() + extension;
     link.download = filename;
     
     document.body.appendChild(link);
@@ -285,10 +347,20 @@ const App: React.FC = () => {
     }
 
     if (error) {
+        const isPermissionError = error.includes("403") || error.includes("權限");
         return (
-            <div className="text-center p-8 bg-red-900/50 rounded-lg">
-                <p className="text-red-300 mb-4">{error}</p>
-                <ActionButton onClick={handleReset}>重新開始</ActionButton>
+            <div className="text-center p-8 bg-red-900/50 rounded-lg max-w-lg mx-auto border border-red-500">
+                <h3 className="text-xl font-bold text-red-300 mb-2">出圖失敗</h3>
+                <p className="text-red-200 mb-6 text-sm opacity-90 leading-relaxed">{error}</p>
+                <div className="flex flex-col gap-3 sm:flex-row justify-center">
+                  <ActionButton onClick={handleReset} className="bg-gray-700 hover:bg-gray-600 text-sm py-2">重新開始</ActionButton>
+                  {isPermissionError && (
+                    <ActionButton onClick={handleOpenKeySelection} className="bg-indigo-600 hover:bg-indigo-500 text-sm py-2">重新選擇金鑰 (需付費項目)</ActionButton>
+                  )}
+                </div>
+                {isPermissionError && (
+                  <p className="text-xs text-gray-400 mt-4 italic">提示：Gemini Pro Image 與 Veo 模型需要綁定信用卡且啟用結算的 GCP 專案金鑰。</p>
+                )}
             </div>
         );
     }
@@ -343,6 +415,26 @@ const App: React.FC = () => {
                 </div>
               ))}
             </div>
+
+            {newsSources.length > 0 && (
+              <div className="mt-8 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                <h4 className="text-sm font-semibold text-gray-400 mb-2 uppercase tracking-wider">參考來源</h4>
+                <div className="flex flex-wrap gap-x-4 gap-y-2">
+                  {newsSources.map((source, idx) => (
+                    <a 
+                      key={idx}
+                      href={source.web.uri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-indigo-400 hover:text-indigo-300 hover:underline transition-colors"
+                    >
+                      {source.web.title}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-8 text-center">
               {selectedCount > 1 ? (
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -427,7 +519,12 @@ const App: React.FC = () => {
               ))}
             </div>
             
-            <StyleSelector onSelect={setImageStyle} selectedStyle={imageStyle} />
+            <StyleSelector 
+              onSelectStyle={setImageStyle} 
+              selectedStyle={imageStyle} 
+              onSelectLanguage={setTextLanguage}
+              selectedLanguage={textLanguage}
+            />
 
             <div className="flex flex-col sm:flex-row gap-4 justify-center mt-6">
               <ActionButton 
@@ -449,12 +546,25 @@ const App: React.FC = () => {
       case AppStage.IMAGE_GENERATED:
         return (
             <div className="w-full">
-                <h2 className="text-2xl font-bold mb-8 text-center">您的新聞靈感畫作</h2>
+                <h2 className="text-2xl font-bold mb-8 text-center">您的新聞靈感畫作 (1920*1080)</h2>
                 <div className="space-y-10">
                     {generationItems.map(item => (
                         <div key={item.id} className="text-center bg-gray-900/30 p-4 sm:p-6 rounded-lg border border-gray-700">
-                            {item.imageUrl && (
-                                <img src={item.imageUrl} alt={`Generated from ${item.source[0].title}`} className="rounded-lg shadow-2xl mx-auto mb-6 max-w-full h-auto md:max-w-2xl" />
+                            {item.mediaUrl && item.mediaType === 'image' && (
+                                <img src={item.mediaUrl} alt={`Generated from ${item.source[0].title}`} className="rounded-lg shadow-2xl mx-auto mb-6 max-w-full h-auto md:max-w-4xl" />
+                            )}
+                             {item.mediaUrl && item.mediaType === 'video' && (
+                                <video 
+                                    src={item.mediaUrl} 
+                                    controls 
+                                    autoPlay
+                                    loop
+                                    muted
+                                    playsInline
+                                    className="rounded-lg shadow-2xl mx-auto mb-6 max-w-full h-auto md:max-w-4xl"
+                                >
+                                  您的瀏覽器不支援影片播放。
+                                </video>
                             )}
                             <div className="max-w-2xl mx-auto text-left bg-gray-900/50 p-4 rounded-lg mb-6 border border-gray-700">
                                 <h3 className="font-bold text-lg text-indigo-300 mb-3">靈感來源新聞:</h3>
@@ -495,17 +605,19 @@ const App: React.FC = () => {
                               ) : (
                                 <div className="flex gap-4 justify-center">
                                    <ActionButton 
-                                      onClick={() => handleDownloadImage(item.imageUrl, item.source)}
+                                      onClick={() => handleDownloadImage(item.mediaUrl, item.source)}
                                       className="bg-green-600 hover:bg-green-500 text-sm py-2 px-4"
                                     >
-                                      下載圖片
+                                      下載{item.mediaType === 'video' ? '影片' : '圖片'}
                                     </ActionButton>
-                                    <ActionButton 
-                                      onClick={() => handleStartEditImage(item.id)}
-                                      className="bg-purple-600 hover:bg-purple-500 text-sm py-2 px-4"
-                                    >
-                                      修改圖片
-                                    </ActionButton>
+                                    {item.mediaType === 'image' && (
+                                      <ActionButton 
+                                        onClick={() => handleStartEditImage(item.id)}
+                                        className="bg-purple-600 hover:bg-purple-500 text-sm py-2 px-4"
+                                      >
+                                        修改圖片
+                                      </ActionButton>
+                                    )}
                                 </div>
                               )}
                         </div>

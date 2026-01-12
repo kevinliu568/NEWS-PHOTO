@@ -29,6 +29,17 @@ export enum ImageStyle {
   OIL_PAINTING = '油畫',
   CARTOON = '卡通',
   WATERCOLOR = '水彩',
+  ILLUSTRATION = '插畫',
+  CHALKBOARD = '黑板彩色',
+  CONCEPT_ART = '概念藝術',
+  VISUAL_GUIDE = '視覺引導',
+  DYNAMIC_VIDEO = '動態影像',
+}
+
+export enum ImageTextLanguage {
+  NONE = '無文字',
+  CHINESE = '繁體中文',
+  ENGLISH = '英文',
 }
 
 export interface NewsSource {
@@ -42,5 +53,6 @@ export interface GenerationItem {
   id: string;
   source: NewsHeadline[];
   prompt: ImagePrompt | null;
-  imageUrl: string | null;
+  mediaUrl: string | null;
+  mediaType: 'image' | 'video' | null;
 }
